@@ -26,7 +26,7 @@ def run
 end
 
 def logger
-  @logger ||= Logger.new('logs.log', 'weekly', datetime_format: '%Y-%m-%d %H:%M:%S')
+  @logger ||= Logger.new("#{File.expand_path(File.dirname(__FILE__))}/logs.log", 'weekly', datetime_format: '%Y-%m-%d %H:%M:%S')
 end
 
 def choose_iphone
