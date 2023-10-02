@@ -2,6 +2,8 @@ require 'logger'
 require 'net/http'
 require 'json'
 
+DEBUG_LOGS_ENABLED = false.freeze
+
 TELEGRAM_BOT_TOKEN = ''.freeze
 TELEGRAM_CHAT_ID = ''.freeze
 
@@ -26,7 +28,11 @@ def run
 end
 
 def logger
-  @logger ||= Logger.new("#{File.expand_path(File.dirname(__FILE__))}/logs.log", 'weekly', datetime_format: '%Y-%m-%d %H:%M:%S')
+  @logger ||= Logger.new("#{File.expand_path(File.dirname(__FILE__))}/logs.log",
+                         'weekly',
+                         datetime_format: '%Y-%m-%d %H:%M:%S',
+                         progname: 'find_available_iphone',
+                         level: DEBUG_LOGS_ENABLED ? Logger::DEBUG : Logger::INFO)
 end
 
 def choose_iphone
