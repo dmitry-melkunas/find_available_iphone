@@ -99,6 +99,11 @@ def make_request(url, query_params)
 end
 
 def handle_information_from(response, model_info)
+  unless (error_message = response.dig('body', 'content', 'pickupMessage', 'errorMessage')).nil?
+    logger.error("Error message present: #{error_message}")
+    raise "Error message present: #{error_message}"
+  end
+
   available_in_stores = []
   stores = response.dig('body', 'content', 'pickupMessage', 'stores')
 
