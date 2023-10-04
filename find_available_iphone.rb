@@ -16,7 +16,8 @@ MODEL_CODES = {
 
 ZIPS = {
   '1' => '10210', # Berlin
-  '2' => '20110' # Hamburg
+  '2' => '20110', # Hamburg
+  '3' => '19376' # Between Berlin and Hamburg
 }.freeze
 
 def run
@@ -57,7 +58,8 @@ def choose_zip
   zip_or_number = if ARGV[1].nil?
                     puts "Input zip or choose number of zip:\n" \
                          "1 - Berlin (10210)\n" \
-                         "2 - Hamburg (20110)\n"
+                         "2 - Hamburg (20110)\n" \
+                         "3 - Between Berlin and Hamburg (19376)\n"
                     gets.chop
                   else
                     ARGV[1]
