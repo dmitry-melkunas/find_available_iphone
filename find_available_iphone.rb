@@ -7,7 +7,7 @@ DEBUG_LOGS_ENABLED = false.freeze
 TELEGRAM_BOT_TOKEN = ''.freeze
 TELEGRAM_CHAT_ID = ''.freeze
 
-GERMANY_APPLE_STORE_URL = 'https://www.apple.com/de/shop/fulfillment-messages'.freeze # for Germany Apple Stores
+APPLE_STORE_URL = 'https://www.apple.com/de/shop/fulfillment-messages'.freeze # for Germany Apple Stores
 
 MODEL_CODES = {
   '1' => { code: 'MU793ZD/A', name: 'iPhone 15 Pro Max 256 Gb (Natural Titanium)' },
@@ -21,11 +21,12 @@ ZIPS = {
 }.freeze
 
 def run
-  model_info = choose_iphone
-  zip        = choose_zip
-  response   = fetch_information(model_info, zip)
+  models_info = choose_iphones
+  zip         = choose_zip
+  response    = fetch_information(models_info, zip)
 
-  handle_information_from(response, model_info)
+  handled_infos = handle_information_from(response, models_info)
+  print_and_send_messages(handled_infos)
 end
 
 def logger
@@ -36,26 +37,31 @@ def logger
                          level: DEBUG_LOGS_ENABLED ? Logger::DEBUG : Logger::INFO)
 end
 
-def choose_iphone
-  number = if ARGV[0].nil?
-             puts "Input number of needed iPhone:\n" \
+def choose_iphones
+  models_info = []
+  numbers = if ARGV[0].nil? || ARGV[0] == '' || ARGV[0] == ' '
+             puts "Input number or numbers of needed iPhone (example, '1 2 3' or 1):\n" \
                   "1 - iPhone 15 Pro Max 256 Gb (Natural Titanium)\n" \
                   "2 - iPhone 15 Pro Max 256 Gb (Blue Titanium)\n"
-             gets.chop
+             gets.chop.strip.split(' ')
            else
-             ARGV[0]
+             ARGV[0].strip.split(' ')
            end
 
-  if MODEL_CODES[number].nil?
-    logger.error("Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}")
-    raise "Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}"
+  numbers.each do |number|
+    if MODEL_CODES[number].nil?
+      logger.error("Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}")
+      raise "Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}"
+    end
+
+    models_info << MODEL_CODES[number].merge(stores: [], present: false)
   end
 
-  MODEL_CODES[number]
+  models_info
 end
 
 def choose_zip
-  zip_or_number = if ARGV[1].nil?
+  zip_or_number = if ARGV[1].nil? || ARGV[1] == '' || ARGV[1] == ' '
                     puts "Input zip or choose number of zip:\n" \
                          "1 - Berlin (10210)\n" \
                          "2 - Hamburg (20110)\n" \
@@ -74,15 +80,16 @@ def choose_zip
   zip
 end
 
-def fetch_information(model_info, zip)
+def fetch_information(models_info, zip)
   query_params = {
     'pl'       => true,
     'mts.0'    => 'regular',
-    'parts.0'  => model_info[:code],
     'location' => zip
-  }
+  }.tap do |p|
+    models_info.each_with_index {|model_info, i| p["parts.#{i}"] = model_info[:code]}
+  end
 
-  make_request(GERMANY_APPLE_STORE_URL, query_params)
+  make_request(APPLE_STORE_URL, query_params)
 end
 
 def parse(response)
@@ -106,26 +113,41 @@ def make_request(url, query_params)
   parse(Net::HTTP.get_response(uri))
 end
 
-def handle_information_from(response, model_info)
+def handle_information_from(response, models_info)
   unless (error_message = response.dig('body', 'content', 'pickupMessage', 'errorMessage')).nil?
     logger.error("Error message present: #{error_message}")
     raise "Error message present: #{error_message}"
   end
 
-  available_in_stores = []
-  stores = response.dig('body', 'content', 'pickupMessage', 'stores')
-
-  stores.each do |store|
-    available = store.dig('partsAvailability', model_info[:code], 'pickupDisplay') == 'available'
-    available_in_stores << store.dig('storeName') if available
+  response.dig('body', 'content', 'pickupMessage', 'stores').each do |store|
+    models_info.each_with_index do |model_info, i|
+      if store.dig('partsAvailability', model_info[:code], 'pickupDisplay') == 'available'
+        models_info[i][:present] = true
+        models_info[i][:stores] << "#{store.dig('city')}: #{store.dig('storeName')}"
+      end
+    end
   end
 
-  message = "#{model_info[:name]}\n"
-  message << (available_in_stores == [] ? "Unavailable in stores!" : "Available in stores: #{available_in_stores.join(', ')}")
+  models_info
+end
 
-  logger.info(message)
-  send_message_to_telegram(message) unless available_in_stores == []
-  puts message
+def print_and_send_messages(handled_infos)
+  message_with_all_information = ''
+  message_with_available_iphones = ''
+
+  handled_infos.each do |handled_info|
+    if handled_info[:present] == true
+      message = "[AVAILABLE IN STORES]\n#{handled_info[:name]}\n#{handled_info[:stores].join(', ')}.\n\n"
+      message_with_available_iphones << message
+      message_with_all_information << message
+    else
+      message_with_all_information << "[UNAVAILABLE IN STORES]\n#{handled_info[:name]}\n\n"
+    end
+  end
+
+  logger.info(message_with_all_information.chop.chop)
+  send_message_to_telegram(message_with_available_iphones) unless message_with_available_iphones == ''
+  puts message_with_all_information.chop
 end
 
 def send_message_to_telegram(message)
