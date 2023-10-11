@@ -17,7 +17,7 @@ MODEL_CODES = {
 ZIPS = {
   '1' => '10210', # Berlin
   '2' => '20110', # Hamburg
-  '3' => '19376' # Between Berlin and Hamburg
+  '3' => '19367' # Between Berlin and Hamburg
 }.freeze
 
 def run
