@@ -65,7 +65,7 @@ def choose_zip
                     puts "Input zip or choose number of zip:\n" \
                          "1 - Berlin (10210)\n" \
                          "2 - Hamburg (20110)\n" \
-                         "3 - Between Berlin and Hamburg (19376)\n"
+                         "3 - Between Berlin and Hamburg (19367)\n"
                     gets.chop
                   else
                     ARGV[1]
