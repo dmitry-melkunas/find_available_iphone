@@ -2,16 +2,47 @@ require 'logger'
 require 'net/http'
 require 'json'
 
-DEBUG_LOGS_ENABLED = false.freeze
+DEBUG_LOGS_ENABLED = false
 
-TELEGRAM_BOT_TOKEN = ''.freeze
-TELEGRAM_CHAT_ID = ''.freeze
+TELEGRAM_BOT_TOKEN = ''
+TELEGRAM_CHAT_ID = ''
 
-APPLE_STORE_URL = 'https://www.apple.com/de/shop/fulfillment-messages'.freeze # for Germany Apple Stores
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+COOKIE = ''
 
-MODEL_CODES = {
-  '1' => { code: 'MU793ZD/A', name: 'iPhone 15 Pro Max 256 Gb (Natural Titanium)' },
-  '2' => { code: 'MU7A3ZD/A', name: 'iPhone 15 Pro Max 256 Gb (Blue Titanium)' }
+AVAILABLE_COUNTRIES = {
+  '1' => 'usa',
+  '2' => 'germany'
+}.freeze
+
+SETTINGS = {
+  'usa' => {
+    apple_store_url: 'https://www.apple.com/shop/fulfillment-messages',
+    currency: 'USD',
+    model_codes: {
+      '1' => { code: 'MFXG4LL/A', price: 1199, name: 'iPhone 17 Pro Max 256 Gb (Silver)' },
+      '2' => { code: 'MFXH4LL/A', price: 1199, name: 'iPhone 17 Pro Max 256 Gb (Cosmic Orange)' },
+      '3' => { code: 'MFXJ4LL/A', price: 1199, name: 'iPhone 17 Pro Max 256 Gb (Deep Blue)' }
+    },
+    zip_codes: {
+      '1' => { code: '10010', city: 'New York', state: 'NY', tax: 8.88 },
+      '2' => { code: '19720', city: 'New Castle', state: 'DE', tax: 0.0 }
+    }
+  },
+  'germany' => {
+    apple_store_url: 'https://www.apple.com/de/shop/fulfillment-messages',
+    currency: 'EUR',
+    model_codes: {
+      '1' => { code: 'MFYM4ZD/A', price: 1449, name: 'iPhone 17 Pro Max 256 Gb (Silver)' },
+      '2' => { code: 'MFYN4ZD/A', price: 1449, name: 'iPhone 17 Pro Max 256 Gb (Cosmic Orange)' },
+      '3' => { code: 'MFYP4ZD/A', price: 1449, name: 'iPhone 17 Pro Max 256 Gb (Deep Blue)' }
+    },
+    zip_codes: {
+      '1' => { code: '10210', city: 'Berlin' },
+      '2' => { code: '20110', city: 'Hamburg' },
+      '3' => { code: '19367', city: 'Between Berlin and Hamburg' }
+    }
+  }
 }.freeze
 
 ZIPS = {
@@ -19,15 +50,6 @@ ZIPS = {
   '2' => '20110', # Hamburg
   '3' => '19367' # Between Berlin and Hamburg
 }.freeze
-
-def run
-  models_info = choose_iphones
-  zip         = choose_zip
-  response    = fetch_information(models_info, zip)
-
-  handled_infos = handle_information_from(response, models_info)
-  print_and_send_messages(handled_infos)
-end
 
 def logger
   @logger ||= Logger.new("#{File.expand_path(File.dirname(__FILE__))}/logs.log",
@@ -37,72 +59,132 @@ def logger
                          level: DEBUG_LOGS_ENABLED ? Logger::DEBUG : Logger::INFO)
 end
 
-def choose_iphones
+def run
+  country     = choose_country
+  models_info = choose_phones(country)
+  zip         = choose_zip(country)
+  response    = fetch_information(country, models_info, zip)
+
+  handled_infos = handle_information_from(response, models_info)
+  print_and_send_messages(country, handled_infos)
+end
+
+def choose_country
+  input_value = ARGV[0]
+
+  available_countries = AVAILABLE_COUNTRIES.map do |index, country|
+    "#{index} - #{country}"
+  end.join("\n")
+
+  country_or_number = if [nil, '', ' '].include?(input_value)
+                        puts "Input country in downcase or choose number of country:\n" \
+                             "#{available_countries}\n"
+
+                        gets.chop
+                      else
+                        input_value
+                      end
+
+  country = country_or_number.length >= 3 ? country_or_number : AVAILABLE_COUNTRIES[country_or_number]
+
+  if country.nil? || !AVAILABLE_COUNTRIES.values.include?(country)
+    error_message = "Invalid country! Use only country names (#{AVAILABLE_COUNTRIES.values.join(', ')}) in downcase or numbers (#{AVAILABLE_COUNTRIES.keys.join(', ')})"
+    logger.error(error_message)
+    raise error_message
+  end
+
+  country
+end
+
+def choose_phones(country)
+  input_value = ARGV[1]
+
+  available_phones = SETTINGS.dig(country, :model_codes).map do |index, phone_info|
+    "#{index} - #{phone_info[:name]}"
+  end.join("\n")
+
   models_info = []
-  numbers = if ARGV[0].nil? || ARGV[0] == '' || ARGV[0] == ' '
-             puts "Input number or numbers of needed iPhone (example, '1 2 3' or 1):\n" \
-                  "1 - iPhone 15 Pro Max 256 Gb (Natural Titanium)\n" \
-                  "2 - iPhone 15 Pro Max 256 Gb (Blue Titanium)\n"
-             gets.chop.strip.split(' ')
-           else
-             ARGV[0].strip.split(' ')
-           end
+  numbers = if [nil, '', ' '].include?(input_value)
+              puts "Input number or numbers of needed iPhone (example, '1 2 3' or 1):\n" \
+                   "#{available_phones}\n"
+
+              gets.chop.strip.split(' ')
+            else
+              input_value.strip.split(' ')
+            end
 
   numbers.each do |number|
-    if MODEL_CODES[number].nil?
-      logger.error("Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}")
-      raise "Invalid number for choosing iPhone! Use only number from #{MODEL_CODES.keys}"
+    if SETTINGS.dig(country, :model_codes, number).nil?
+      error_message = "Invalid number for choosing iPhone! Use only numbers (#{SETTINGS.dig(country, :model_codes).keys.join(', ')})"
+      logger.error(error_message)
+      raise error_message
     end
 
-    models_info << MODEL_CODES[number].merge(stores: [], present: false)
+    models_info << SETTINGS.dig(country, :model_codes, number).merge(stores: [], present: false)
   end
 
   models_info
 end
 
-def choose_zip
-  zip_or_number = if ARGV[1].nil? || ARGV[1] == '' || ARGV[1] == ' '
+def choose_zip(country)
+  input_value = ARGV[2]
+
+  available_zips = SETTINGS.dig(country, :zip_codes).map do |index, zip_info|
+    "#{index} - #{[zip_info[:city], zip_info[:state]].compact.join(', ')} (#{zip_info[:code]})"
+  end.join("\n")
+
+  zip_or_number = if [nil, '', ' '].include?(input_value)
                     puts "Input zip or choose number of zip:\n" \
-                         "1 - Berlin (10210)\n" \
-                         "2 - Hamburg (20110)\n" \
-                         "3 - Between Berlin and Hamburg (19367)\n"
+                         "#{available_zips}\n"
+
                     gets.chop
                   else
-                    ARGV[1]
+                    input_value
                   end
-  zip = zip_or_number.length == 5 ? zip_or_number : ZIPS[zip_or_number]
+
+  zip = zip_or_number.length == 5 ? zip_or_number : SETTINGS.dig(country, :zip_codes, zip_or_number)
 
   if zip.nil?
-    logger.error("Invalid zip! Use only zip code with 5 digits or number from #{ZIPS.keys}")
-    raise "Invalid zip! Use only zip code with 5 digits or number from #{ZIPS.keys}"
+    error_message = "Invalid zip! Use only zip code with 5 digits or numbers (#{SETTINGS.dig(country, :zip_codes).keys.join(', ')})"
+    logger.error(error_message)
+    raise error_message
   end
 
   zip
 end
 
-def fetch_information(models_info, zip)
+def fetch_information(country, models_info, zip)
   query_params = {
     'pl'       => true,
     'mts.0'    => 'regular',
     'location' => zip
   }.tap do |p|
-    models_info.each_with_index {|model_info, i| p["parts.#{i}"] = model_info[:code]}
+    models_info.each_with_index { |model_info, i| p["parts.#{i}"] = model_info[:code] }
+    p['cppart'] = 'UNLOCKED/US' if country == 'usa'
   end
 
-  make_request(APPLE_STORE_URL, query_params)
+  make_request(SETTINGS.dig(country, :apple_store_url), query_params)
 end
 
 def parse(response)
   unless response.code == '200'
-    logger.error("Failed response. Status: #{response.code}\nResponse body: #{response.body}")
-    raise "Failed response. Status: #{response.code}\nResponse body: #{response.body}"
+    error_message = "Failed response. Status: #{response.code}"
+    send_message_to_telegram(error_message)
+
+    detailed_error_message = "#{error_message}\nResponse body: #{response.body}"
+    logger.error(detailed_error_message)
+    raise detailed_error_message
   end
 
   logger.debug("Response body: #{response.body}")
   JSON.parse(response.body)
 rescue => e
-  logger.error("Failed response. Error message: #{e.message}. Status: #{response.code}\nResponse body: #{response.body}")
-  raise "Failed response. Error message: #{e.message}. Status: #{response.code}\nResponse body: #{response.body}"
+  error_message = "Failed response. Error message: #{e.message}. Status: #{response.code}"
+  send_message_to_telegram(error_message)
+
+  detailed_error_message = "#{error_message}\nResponse body: #{response.body}"
+  logger.error(detailed_error_message)
+  raise detailed_error_message
 end
 
 def make_request(url, query_params)
@@ -110,7 +192,15 @@ def make_request(url, query_params)
   uri.query = URI.encode_www_form(query_params)
 
   logger.debug("Request url: #{uri.to_s}")
-  parse(Net::HTTP.get_response(uri))
+
+  request = Net::HTTP::Get.new(uri)
+  request['Accept'] = 'application/json'
+  request['User-Agent'] = USER_AGENT
+  request['Cookie'] = COOKIE
+
+  response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') { |http| http.request(request) }
+
+  parse(response)
 end
 
 def handle_information_from(response, models_info)
@@ -123,7 +213,7 @@ def handle_information_from(response, models_info)
     models_info.each_with_index do |model_info, i|
       if store.dig('partsAvailability', model_info[:code], 'pickupDisplay') == 'available'
         models_info[i][:present] = true
-        models_info[i][:stores] << "#{store.dig('city')}: #{store.dig('storeName')}"
+        models_info[i][:stores] << { city: store['city'], state: store['state'], name: store['storeName'] }.compact
       end
     end
   end
@@ -131,23 +221,44 @@ def handle_information_from(response, models_info)
   models_info
 end
 
-def print_and_send_messages(handled_infos)
+def print_and_send_messages(country, handled_infos)
   message_with_all_information = ''
-  message_with_available_iphones = ''
+  message_with_available_phones = ''
 
   handled_infos.each do |handled_info|
     if handled_info[:present] == true
-      message = "[AVAILABLE IN STORES]\n#{handled_info[:name]}\n#{handled_info[:stores].join(', ')}.\n\n"
-      message_with_available_iphones << message
+      message = "[AVAILABLE IN #{country.upcase} STORES]\n" \
+        "#{handled_info[:name]}\n" \
+        "STORES:\n" \
+        "#{build_available_stores_result(country, handled_info)}.\n\n"
+
+      message_with_available_phones << message
       message_with_all_information << message
     else
-      message_with_all_information << "[UNAVAILABLE IN STORES]\n#{handled_info[:name]}\n\n"
+      message_with_all_information << "[UNAVAILABLE IN #{country.upcase} STORES]\n#{handled_info[:name]}\n\n"
     end
   end
 
   logger.info(message_with_all_information.chop.chop)
-  send_message_to_telegram(message_with_available_iphones) unless message_with_available_iphones == ''
+  send_message_to_telegram(message_with_available_phones) unless message_with_available_phones == ''
   puts message_with_all_information.chop
+end
+
+def build_available_stores_result(country, info)
+  info[:stores].map do |store|
+    "#{store[:city]}#{store[:state].nil? ? '' : ", #{store[:state]}"} (#{store[:name]}): #{calculate_phone_price(info[:price], country, store)}"
+  end.join("\n")
+end
+
+def calculate_phone_price(price, country, store)
+  return price.to_s if store[:state].nil? || fetch_tax_percent(country, store[:state]).nil?
+
+  tax_percent = fetch_tax_percent(country, store[:state])
+  (price + (price * tax_percent / 100)).round(2).to_s
+end
+
+def fetch_tax_percent(country, state)
+  @fetch_tax_percent ||= SETTINGS.dig(country, :zip_code).values.find { |zip_info| zip_info[:state] == state }&.dig(:tax)
 end
 
 def send_message_to_telegram(message)
@@ -158,10 +269,11 @@ def send_message_to_telegram(message)
   }
 
   response = make_request(url, query_params)
-  unless response&.dig('ok') == true
-    logger.error("Failed send message to telegram.\nResponse body: #{response}")
-    puts "Failed send message to telegram.\nResponse body: #{response}"
-  end
+  return if response&.dig('ok') == true
+
+  error_message = "Failed send message to telegram.\nResponse body: #{response}"
+  logger.error(error_message)
+  puts error_message
 end
 
 logger
