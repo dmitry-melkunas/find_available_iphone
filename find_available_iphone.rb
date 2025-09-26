@@ -3,12 +3,16 @@ require 'net/http'
 require 'json'
 
 DEBUG_LOGS_ENABLED = false
+USE_INPUT_COOKIE = false
 
-TELEGRAM_BOT_TOKEN = ''
-TELEGRAM_CHAT_ID = ''
+TELEGRAM_BOT_TOKEN = ''.freeze
+TELEGRAM_CHAT_ID = ''.freeze
 
-USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
-COOKIE = ''
+APPLE_COOKIE_URL = 'https://www.apple.com/shop/address/cookie'.freeze
+APPLE_COOKIE_VERIFICATION_URL = 'https://www.apple.com/shop/shld/work/v1/q?wd=0'.freeze
+
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'.freeze
+COOKIE = nil
 
 AVAILABLE_COUNTRIES = {
   '1' => 'usa',
@@ -45,12 +49,6 @@ SETTINGS = {
   }
 }.freeze
 
-ZIPS = {
-  '1' => '10210', # Berlin
-  '2' => '20110', # Hamburg
-  '3' => '19367' # Between Berlin and Hamburg
-}.freeze
-
 def logger
   @logger ||= Logger.new("#{File.expand_path(File.dirname(__FILE__))}/logs.log",
                          'weekly',
@@ -63,9 +61,10 @@ def run
   country     = choose_country
   models_info = choose_phones(country)
   zip         = choose_zip(country)
-  response    = fetch_information(country, models_info, zip)
+  cookie      = fetch_cookies
+  information = fetch_information(cookie, country, models_info, zip)
 
-  handled_infos = handle_information_from(response, models_info)
+  handled_infos = handle_information_from(information, models_info)
   print_and_send_messages(country, handled_infos)
 end
 
@@ -153,20 +152,43 @@ def choose_zip(country)
   zip
 end
 
-def fetch_information(country, models_info, zip)
+def fetch_cookies
+  return COOKIE if USE_INPUT_COOKIE
+
+  sleep(1)
+  initial_cookies_response = make_request('get', APPLE_COOKIE_URL, nil, nil)
+  initial_cookies = parse(initial_cookies_response, cookies: true)
+  initial_cookie = build_cookie(initial_cookies)
+
+  sleep(1)
+  get_verification_task_response = make_request('get', APPLE_COOKIE_VERIFICATION_URL, nil, initial_cookie)
+  get_verification_task = parse(get_verification_task_response)
+
+  verification_result_params = build_verification_params(get_verification_task)
+
+  sleep(0.1)
+  confirm_verification_task_response = make_request('post', APPLE_COOKIE_VERIFICATION_URL, verification_result_params, initial_cookie)
+  verification_cookies = parse(confirm_verification_task_response, cookies: true)
+  verification_cookie = build_cookie(verification_cookies)
+
+  [initial_cookie, verification_cookie].join('; ')
+end
+
+def fetch_information(cookie, country, models_info, zip)
   query_params = {
     'pl'       => true,
     'mts.0'    => 'regular',
-    'location' => zip
+    'location' => zip[:code]
   }.tap do |p|
     models_info.each_with_index { |model_info, i| p["parts.#{i}"] = model_info[:code] }
     p['cppart'] = 'UNLOCKED/US' if country == 'usa'
   end
 
-  make_request(SETTINGS.dig(country, :apple_store_url), query_params)
+  response = make_request('get', SETTINGS.dig(country, :apple_store_url), query_params, cookie)
+  parse(response)
 end
 
-def parse(response)
+def parse(response, cookies: false)
   unless response.code == '200'
     error_message = "Failed response. Status: #{response.code}"
     send_message_to_telegram(error_message)
@@ -177,6 +199,8 @@ def parse(response)
   end
 
   logger.debug("Response body: #{response.body}")
+  return parse_cookies(response) if cookies
+
   JSON.parse(response.body)
 rescue => e
   error_message = "Failed response. Error message: #{e.message}. Status: #{response.code}"
@@ -187,20 +211,92 @@ rescue => e
   raise detailed_error_message
 end
 
-def make_request(url, query_params)
+def parse_cookies(response)
+  cookies = response&.get_fields('Set-Cookie')
+  return cookies unless cookies.nil?
+
+  error_message = 'Failed to fetch cookies from response'
+  logger.error(error_message)
+  raise error_message
+end
+
+def build_cookie(cookies)
+  return cookies.map { |cookie| cookie.split(';').first }.join('; ') unless [nil, []].include?(cookies)
+
+  error_message = 'Failed to get cookies in array'
+  logger.error(error_message)
+  raise error_message
+end
+
+def make_request(method, url, params, cookie)
+  method = method.to_s.downcase
+  http_class = case method
+               when 'get'  then Net::HTTP::Get
+               when 'post' then Net::HTTP::Post
+               end
+
   uri = URI(url)
-  uri.query = URI.encode_www_form(query_params)
+  uri.query = URI.encode_www_form(params) if method == 'get' && !params.nil?
 
-  logger.debug("Request url: #{uri.to_s}")
+  logger.debug("#{method.upcase} request to url: #{uri}\nBody: #{params&.to_json}")
 
-  request = Net::HTTP::Get.new(uri)
+  request = http_class.new(uri)
   request['Accept'] = 'application/json'
+  request['Content-Type'] = 'application/json' if method == 'post'
   request['User-Agent'] = USER_AGENT
-  request['Cookie'] = COOKIE
+  request['Cookie'] = cookie if cookie
 
-  response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') { |http| http.request(request) }
+  Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') { |http| http.request(request) }
+end
 
-  parse(response)
+def build_verification_params(params)
+  if params.nil? || params == {}
+    error_message = 'Failed to get verification task params'
+    logger.error(error_message)
+    raise error_message
+  end
+
+  {
+    'X' => params['X'],
+    'result' => params['result'],
+    'low' => params['low'],
+    'timeout' => params['timeout'],
+    'signature' => params['signature'],
+    'high' => params['high'],
+    'parts' => params['parts'],
+    't' => params['t'],
+    'flagskv' => {
+      'patSkip' => true
+    },
+    'number' => calculate_numbers_for_verification_task(params['result'], params['low'], params['high'], params['parts']),
+    'took' => 1
+  }
+end
+
+def calculate_numbers_for_verification_task(result, low, high, parts)
+  result = result.to_i
+  low = low.to_i
+  high = high.to_i
+  parts = parts.to_i
+
+  backtrack = lambda do |current, product|
+    if current.length == parts
+      return current if product == result
+
+      return
+    end
+
+    (low..high).each do |i|
+      next unless (result % (product * i)).zero?
+
+      next_solution = backtrack.call(current + [i], product * i)
+      return next_solution if next_solution
+    end
+
+    nil
+  end
+
+  backtrack.call([], 1)
 end
 
 def handle_information_from(response, models_info)
@@ -268,7 +364,7 @@ def send_message_to_telegram(message)
     'text' => message
   }
 
-  response = make_request(url, query_params)
+  response = make_request('get', url, query_params, nil)
   return if response&.dig('ok') == true
 
   error_message = "Failed send message to telegram.\nResponse body: #{response}"
